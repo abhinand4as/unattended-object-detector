@@ -30,11 +30,13 @@ unattended_object_detector/
 │       ├── prompts.py       # luggage/negative prompt vocabulary — edit here to experiment
 │       ├── config.py        # ownership/abandonment tunables — edit here to tune
 │       ├── detection.py     # per-frame detection plumbing, frame iteration
-│       ├── open_vocab.py    # YOLO-World + CLIP luggage detector
+│       ├── open_vocab.py    # model-agnostic luggage detector wrapper
+│       ├── model.py         # YOLO-World / YOLOE backends — picked by --weights filename
 │       ├── tracking.py      # BoxMOT tracker construction, rendering, saving
 │       └── ownership.py     # ownership/abandonment state machine (no cv2/ultralytics dep)
 └── tests/
-    └── test_ownership.py
+    ├── test_ownership.py
+    └── test_model.py
 ```
 
 Nothing here imports scripts from outside this directory.
@@ -90,7 +92,9 @@ uv run pytest
 
 `ownership.py` — the ownership/abandonment state machine — has no cv2/ultralytics/detector
 dependency by design, specifically so it can be unit tested without any of the slow, GPU-bound
-detection/tracking machinery (see `tests/test_ownership.py`).
+detection/tracking machinery (see `tests/test_ownership.py`). `tests/test_model.py` covers
+`model.py`'s backend-selection and prompt-sanitization logic the same way — no weights
+downloaded, since it never constructs a real `YoloWorldBackend`/`YoloeBackend`.
 
 ### Supported sources
 
@@ -130,6 +134,31 @@ the file (negatives still come from `prompts.py` unless `--no-negatives` is also
 uv run unattended-object-detector --source video.mp4 \
     --luggage-prompts "duffel bag" "jute sack" "tiffin carrier"
 ```
+
+## Switching the luggage detector backend (YOLO-World / YOLOE)
+
+`--weights` selects both the checkpoint *and* the backend that loads it — `model.py` picks
+automatically from the filename, nothing else to configure:
+
+```bash
+# Default: YOLO-World v2
+uv run unattended-object-detector --source video.mp4 --weights yolov8s-worldv2.pt
+
+# YOLOE — a newer open-vocabulary family; any filename containing "yoloe" selects it.
+# Every released YOLOE checkpoint is a segmentation model (filenames always end in
+# "-seg" or "-seg-pf") -- this pipeline only reads its boxes, so the mask output is
+# unused. Prefer the plain "-seg" variant: "-seg-pf" ("prompt-free") ignores
+# --luggage-prompts entirely and always detects its own large built-in vocabulary instead.
+uv run unattended-object-detector --source video.mp4 --weights yoloe-26l-seg.pt
+```
+
+Everything else — `--luggage-prompts`, `--luggage-conf`, `--iou`, `--imgsz`, `--device` — works
+identically regardless of backend; `open_vocab.OpenVocabDetector` only ever calls the small
+common surface `model.VocabBackend` exposes (`set_classes`/`predict`/`resolve_label`), never
+anything backend-specific. One real API difference is handled transparently: YOLOE rejects any
+class name containing a space, so multi-word prompts like `"duffel bag"` get sanitized before
+being sent to it and mapped back to the original string when reading detections — see
+`model.py`'s module docstring.
 
 ## Tuning ownership/abandonment
 

@@ -24,8 +24,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   abandonment state machine (`near_distance_factor`, `owner_window`, `away_distance_factor`,
   `away_time`, `static_grace_period`, `min_reference_height`) in one place, edit-here-to-tune —
   mirrors `prompts.py`'s role for the luggage vocabulary.
+- `model.py` with `YoloeBackend`, integrating YOLOE (e.g. `yoloe-26l-seg.pt`) as an alternative
+  to YOLO-World for the luggage detector. `build_backend(weights)` picks `YoloeBackend` or
+  `YoloWorldBackend` automatically from the `--weights` filename — no separate flag. Handles
+  YOLOE's own quirks transparently: it computes text embeddings itself when none are passed
+  (no explicit `get_text_pe()` call needed), and its `set_classes` rejects any class name
+  containing a space, so `YoloeBackend` sanitizes multi-word prompts (`"duffel bag"` →
+  `"duffel_bag"`) before installing them and maps detected labels back to the originals via
+  `resolve_label()`. Added `tests/test_model.py` for the backend-selection and sanitization
+  logic (no weights downloaded).
 
 ### Changed
+
+- `open_vocab.OpenVocabDetector` is now model-agnostic: it no longer instantiates
+  `ultralytics.YOLOWorld` directly, instead calling `model.build_backend(cfg.weights)` and only
+  the three methods `model.VocabBackend` defines (`set_classes`/`predict`/`resolve_label`).
+  Behavior with the default YOLO-World weights is unchanged. `--weights`'s help text and
+  `open_vocab.Config`'s docstring updated to document both supported backends.
 
 - Restructured into a proper src-layout package: the six modules moved from the project root
   into `src/unattended_object_detector/`, with an `__init__.py` and relative imports between

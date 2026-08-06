@@ -1,4 +1,4 @@
-"""Open-vocabulary luggage detector, built on YOLO-World + CLIP.
+"""Open-vocabulary luggage detector.
 
 Why open-vocabulary at all: COCO's own luggage classes (backpack, handbag,
 suitcase) miss a lot of real-world luggage shapes — duffel bags, cardboard
@@ -15,6 +15,12 @@ file's ROI-classification and negative-label-drawing helpers exist to
 support a three-mode CLI test harness for tuning prompts — genuinely useful
 there, but dead weight in an always-on detection pipeline, so they were
 left out rather than carried over unused.
+
+Which underlying model actually runs — YOLO-World or the newer YOLOE family
+— is model.py's job, picked from cfg.weights's filename (see its module
+docstring). This module stays model-agnostic: it only calls the small
+common surface model.VocabBackend exposes (set_classes/predict/
+resolve_label), never anything YOLO-World- or YOLOE-specific directly.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from . import model as model_backends
 from .prompts import LUGGAGE_PROMPTS, NEGATIVE_PROMPTS
 
 
@@ -38,7 +45,12 @@ class Config:
     prompt match.
     """
 
-    weights: str = "yolov8s-worldv2.pt"  # s/m/l/x — x is most accurate, slowest
+    # YOLO-World: yolov8{s,m,l,x}-worldv2.pt (x is most accurate, slowest).
+    # YOLOE: yoloe-{n,s,m,l,x}-seg.pt (e.g. yoloe-26l-seg.pt) — a newer
+    # open-vocabulary family; prefer the plain "-seg" checkpoint over
+    # "-seg-pf" ("prompt-free"), which ignores set_prompts entirely. The
+    # backend is picked automatically from this filename — see model.py.
+    weights: str = "yolov8s-worldv2.pt"
     conf: float = 0.10                   # deliberately low: open-vocab models score lower than closed-set detectors on the same object
     iou: float = 0.50
     imgsz: int = 640
@@ -47,28 +59,24 @@ class Config:
 
 
 class OpenVocabDetector:
-    """Thin wrapper over YOLO-World that keeps the expensive vocabulary-encoding
-    step out of the per-frame path.
+    """Thin, model-agnostic wrapper that keeps the expensive vocabulary-encoding
+    step out of the per-frame path, regardless of which backend model.py loads.
     """
 
     def __init__(self, cfg: Optional[Config] = None):
         self.cfg = cfg or Config()
-        self._model = None
+        self._backend: Optional[model_backends.VocabBackend] = None
         self._active_prompts: List[str] = []
 
-    def _ensure_model(self):
+    def _ensure_backend(self) -> model_backends.VocabBackend:
         """Load the model on first use only, so constructing a detector (e.g. to
         read --help) never requires network access or GPU weights."""
-        if self._model is None:
-            try:
-                from ultralytics import YOLOWorld
-            except ImportError:
-                sys.exit("ultralytics not installed. Run: pip install ultralytics")
-            self._model = YOLOWorld(self.cfg.weights)
-        return self._model
+        if self._backend is None:
+            self._backend = model_backends.build_backend(self.cfg.weights)
+        return self._backend
 
     def set_prompts(self, prompts: Sequence[str]) -> None:
-        """Encode `prompts` through CLIP and install them as the model's vocabulary.
+        """Encode `prompts` and install them as the model's vocabulary.
 
         This is the ONE expensive step (hundreds of milliseconds) — it must be
         called once, before the per-frame loop starts, never inside it. Calling
@@ -77,14 +85,15 @@ class OpenVocabDetector:
         prompts = list(prompts)
         if prompts == self._active_prompts:
             return
-        model = self._ensure_model()
+        backend = self._ensure_backend()
         try:
-            model.set_classes(prompts)
+            backend.set_classes(prompts)
         except Exception as exc:  # noqa: BLE001 — surface any failure as a clear, actionable message
             sys.exit(
                 f"set_classes() failed: {exc}\n\n"
-                "This almost always means the CLIP text encoder could not be downloaded. "
-                "Install it and ensure network access:\n"
+                "This almost always means the model's text encoder could not be downloaded "
+                "(CLIP for YOLO-World, YOLOE's own text encoder for YOLOE). Ensure network "
+                "access; for YOLO-World specifically:\n"
                 "  pip install git+https://github.com/openai/CLIP.git"
             )
         self._active_prompts = prompts
@@ -98,15 +107,14 @@ class OpenVocabDetector:
         or a negative prompt; the caller decides what to do with each (see
         detection.classify_label).
         """
-        model = self._ensure_model()
-        result = model.predict(
+        backend = self._ensure_backend()
+        result = backend.predict(
             image,
             conf=self.cfg.conf,
             iou=self.cfg.iou,
             imgsz=self.cfg.imgsz,
             device=self.cfg.device or None,
-            verbose=False,
-        )[0]
+        )
 
         detections = []
         names = result.names
@@ -114,6 +122,7 @@ class OpenVocabDetector:
             cls_id = int(box.cls.item())
             confidence = float(box.conf.item())
             x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-            detections.append((names[cls_id], confidence, (x1, y1, x2, y2)))
+            label = backend.resolve_label(names[cls_id])
+            detections.append((label, confidence, (x1, y1, x2, y2)))
         detections.sort(key=lambda d: -d[1])
         return detections

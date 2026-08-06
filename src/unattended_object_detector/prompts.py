@@ -46,7 +46,14 @@ from typing import List
 #     "an unattended object on the floor",
 # ]
 
-LUGGAGE_PROMPTS: List[str] = ["luggage on the floor", "handbag on the floor", "backpack on the floor", "suitcase on the floor", "duffel bag on the floor" ]
+LUGGAGE_PROMPTS: List[str] = ["luggage on the floor", 
+                              "handbag on the floor", 
+                              "backpack on the floor", 
+                              "suitcase on the floor", 
+                              "duffel bag on the floor",
+                              "Parcel on the floor",
+                              "briefcase on the floor",
+                              ]
 
 # Negative prompts. Fed to the detector alongside the luggage vocabulary
 # (see open_vocab.Config.prompts) so it has something to compete against,

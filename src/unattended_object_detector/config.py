@@ -65,12 +65,12 @@ class OwnershipConfig:
 
     # Phase 3: continuous away-time, in seconds, before the luggage is
     # flagged unattended.
-    away_time: float = 10.0
+    away_time: float = 30.0
 
     # Phase 1 (static-furniture check): luggage first seen within this many
     # seconds of stream start is exempted as pre-existing scene furniture,
     # never entering phases 2/3 at all.
-    static_grace_period: float = 3.0
+    static_grace_period: float = 2.0
 
     # Safety floor, in pixels, under the person-height "ruler" used by
     # near_distance_factor/away_distance_factor above. Guards against a

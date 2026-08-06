@@ -10,8 +10,8 @@ Why two different detectors for person vs. luggage
 COCO's own luggage classes (backpack/handbag/suitcase) miss a lot of real
 luggage shapes — duffel bags, cardboard boxes, sacks, trolley bags — no
 fixed training set covers that whole space. Open-vocabulary detection
-(YOLO-World + CLIP, see open_vocab.py) sidesteps that: describe what you're
-looking for in words, and the model finds it.
+(YOLO-World or YOLOE, see open_vocab.py/model.py) sidesteps that: describe
+what you're looking for in words, and the model finds it.
 
 But COCO's own person class is already excellent — high, well-calibrated
 confidence — and there's no reason to pay open-vocabulary detection's noise
@@ -22,10 +22,10 @@ detection is a hybrid, not a single model:
     luggage -> OpenVocabDetector (open_vocab.py) -- broad vocabulary where it's needed
 
 Dropping "person" from the open-vocabulary vocabulary also sharpens luggage
-precision on its own (fewer competing prompts for CLIP to disambiguate
-against), and person detections at high confidence skip the tracker's
-multi-frame tentative-track period entirely — only the lower-confidence
-luggage class still needs it.
+precision on its own (fewer competing prompts for the model's text encoder
+to disambiguate against), and person detections at high confidence skip the
+tracker's multi-frame tentative-track period entirely — only the
+lower-confidence luggage class still needs it.
 
 All luggage-ish prompts ("suitcase", "backpack", "duffel bag", ...) collapse
 into ONE tracked class ("luggage") once tracking starts — the specific
@@ -42,12 +42,14 @@ Usage
     uv run unattended-object-detector --source video.mp4 \\
         --luggage-prompts "duffel bag" "jute sack" "tiffin carrier"
     uv run unattended-object-detector --source video.mp4 --tracker botsort
+    uv run unattended-object-detector --source video.mp4 --weights yoloe-26l-seg.pt
 
 Notes
 -----
-* First run downloads YOLO26l (~50MB), YOLO-World weights (~25-100MB
-  depending on --weights), and the CLIP text encoder (~350MB). All need
-  network access.
+* First run downloads YOLO26l (~50MB) plus whichever open-vocabulary weights
+  --weights selects (YOLO-World: ~25-100MB + the CLIP text encoder ~350MB;
+  YOLOE: its own, larger segmentation checkpoint, no separate CLIP download).
+  All need network access. See model.py for how the backend is chosen.
 * Only a video file, webcam index, or single image are supported as
   --source — see detection.iter_frames for why.
 * --luggage-conf defaults far lower than --person-conf because open-vocab
@@ -98,7 +100,13 @@ def parse_args() -> argparse.Namespace:
 
     luggage_group = parser.add_argument_group("luggage detector (open-vocabulary)")
     luggage_group.add_argument(
-        "--weights", default="yolov8s-worldv2.pt", help="YOLO-World weights (default: %(default)s)."
+        "--weights",
+        default="yolov8s-worldv2.pt",
+        help=(
+            "Open-vocabulary weights: a YOLO-World checkpoint (yolov8{s,m,l,x}-worldv2.pt) or "
+            "a YOLOE one (yoloe-{n,s,m,l,x}-seg.pt, e.g. yoloe-26l-seg.pt) — the backend is "
+            "picked automatically from this filename, see model.py (default: %(default)s)."
+        ),
     )
     luggage_group.add_argument(
         "--luggage-prompts",

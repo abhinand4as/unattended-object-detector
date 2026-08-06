@@ -8,6 +8,10 @@ dist/
 # Downloaded model weights (auto-fetched on first run)
 *.pt
 *.onnx
+*.ts
+
+# Local test/sample video footage
+*.mp4
 
 # Saved annotated output
 runs/

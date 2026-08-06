@@ -25,7 +25,7 @@ CLI (detector.main)
        └─ draw_tracks()            render boxes, labels, owner-connector lines
 ```
 
-Eight modules, each with a narrow, independent responsibility, all living under
+Nine modules, each with a narrow, independent responsibility, all living under
 `src/unattended_object_detector/` and talking to each other through package-relative imports
 (e.g. `detector.py` does `from .tracking import ...`):
 
@@ -34,7 +34,8 @@ Eight modules, each with a narrow, independent responsibility, all living under
 | `constants.py` | The two tracked class ids (`PERSON`, `LUGGAGE`) and their display names. |
 | `prompts.py` | The open-vocabulary luggage/negative prompt lists — edit here to experiment. |
 | `config.py` | `OwnershipConfig` — every tunable in the ownership/abandonment state machine, edit here to tune. |
-| `open_vocab.py` | YOLO-World + CLIP wrapper: vocabulary encoding, per-frame detection. |
+| `open_vocab.py` | Model-agnostic luggage detector wrapper: vocabulary encoding, per-frame detection. |
+| `model.py` | YOLO-World / YOLOE backend implementations, picked by `--weights` filename. |
 | `detection.py` | Turns both detectors' outputs into one common `(N, 6)` array shape; frame source iteration. |
 | `tracking.py` | BoxMOT tracker construction/tuning, rendering, output saving, frame timing. |
 | `ownership.py` | Pure ownership/abandonment state machine — no cv2/ultralytics/detector dependency. |
@@ -81,13 +82,39 @@ this pipeline's own `PERSON_CLASS_ID` — kept as a distinct constant from COCO'
 `constants.py`) even though both happen to be `0`, so the two meanings never get silently
 conflated if either changes independently.
 
-### 3.2 Luggage (`open_vocab.OpenVocabDetector`)
+### 3.2 Luggage (`open_vocab.OpenVocabDetector`, `model.py`)
 
-A thin wrapper over Ultralytics' `YOLOWorld`. The expensive step — encoding the prompt
-vocabulary through CLIP (`set_prompts`) — happens once before the frame loop starts, never per
-frame; calling it again with an unchanged prompt list is a cheap no-op. Each `detect()` call
-returns `(matched_prompt, confidence, box)` tuples sorted by confidence, one entry per
-detected box, for whichever prompt (luggage or negative) scored highest.
+`OpenVocabDetector` is a thin, **model-agnostic** wrapper: it holds a `Config` (weights, conf,
+iou, imgsz, device, prompts) and calls exactly three methods on whatever backend `model.py`
+hands it — `set_classes`, `predict`, `resolve_label` (the `model.VocabBackend` protocol) —
+never anything backend-specific. The expensive step — installing the prompt vocabulary
+(`set_prompts`) — happens once before the frame loop starts, never per frame; calling it again
+with an unchanged prompt list is a cheap no-op. Each `detect()` call returns
+`(matched_prompt, confidence, box)` tuples sorted by confidence, one entry per detected box,
+for whichever prompt (luggage or negative) scored highest.
+
+**Backend selection (`model.py`).** Two backends today, both loaded lazily (constructing a
+detector never requires network access — see `_ensure_backend`):
+
+- `YoloWorldBackend` — wraps `ultralytics.YOLOWorld`. `set_classes(names)` takes plain strings.
+- `YoloeBackend` — wraps `ultralytics.YOLOE`, a newer open-vocabulary family (e.g.
+  `yoloe-26l-seg.pt`). Every released YOLOE checkpoint is a segmentation model (filenames
+  always carry a `-seg` suffix); this pipeline only reads `Results.boxes`, so the mask output
+  is simply unused. `YOLOE.set_classes` computes text embeddings itself via `get_text_pe()`
+  when none are passed, so `YoloeBackend.set_classes` just calls `set_classes(names)` the same
+  shape as YOLO-World — **except** YOLOE's implementation asserts no class name contains a
+  space, which the multi-word prompts in `prompts.py` (`"duffel bag"`, `"an unattended object
+  on the floor"`, ...) would violate outright. `YoloeBackend` sanitizes (`prompt.replace(" ",
+  "_")`) before calling `set_classes`, keeps the sanitized→original mapping, and
+  `resolve_label()` reverses it when `OpenVocabDetector.detect()` reads labels back off
+  `Results.names` — so `detection.classify_label`'s matching against the original
+  `prompts.LUGGAGE_PROMPTS` strings works identically regardless of which backend is loaded.
+
+`build_backend(weights)` (`model.py`) picks the class purely from the weights filename —
+anything containing `"yoloe"` selects `YoloeBackend`, everything else (`yolov8*-world*.pt`, ...)
+selects `YoloWorldBackend` — so switching models is just changing `--weights`, with no separate
+flag to keep in sync. Adding a third backend later means adding one more class to `model.py`,
+not touching `OpenVocabDetector` or `detector.py`'s per-frame loop at all.
 
 **Negative prompts** (`chair`, `table`, `door`, `trash can`, `floor`, `wall` — `prompts.
 NEGATIVE_PROMPTS`) are fed to the detector alongside the luggage vocabulary but never tracked
@@ -95,7 +122,8 @@ NEGATIVE_PROMPTS`) are fed to the detector alongside the luggage vocabulary but 
 has no way to say "this is NOT luggage" and force-fits every blob onto the nearest luggage
 prompt. Deliberately excludes `"person"` — see `prompts.py`'s module docstring: person
 detection is handled entirely by the separate closed-set COCO detector (§2), so adding it here
-would only cost CLIP one more competing prompt to disambiguate against, for no benefit.
+would only cost the text encoder one more competing prompt to disambiguate against, for no
+benefit.
 
 ### 3.3 Collapsing prompts to one class (`detection.build_luggage_dets`)
 
@@ -306,7 +334,12 @@ luggage` (one `LuggageState` per track id ever seen), `FrameClock`'s elapsed tim
 
 - **New luggage vocabulary.** Add strings to `prompts.LUGGAGE_PROMPTS`/`NEGATIVE_PROMPTS` or
   pass `--luggage-prompts` (the only prompt-related CLI override — `NEGATIVE_PROMPTS` isn't
-  meant to vary per run) — no retraining, just a CLIP re-encode at startup.
+  meant to vary per run) — no retraining, just a text-encoder re-encode at startup.
+- **Different open-vocabulary backend.** Switch `--weights` between a YOLO-World checkpoint and
+  a YOLOE one (e.g. `yoloe-26l-seg.pt`) — `model.build_backend` picks the class from the
+  filename automatically (§3.2). Adding a third family means adding one more class to
+  `model.py` implementing `set_classes`/`predict`/`resolve_label`; `open_vocab.py` and
+  `detector.py` don't need to change.
 - **Different tracker.** Any of `tracking.TRACKER_CHOICES` works via `--tracker`; only
   `occluboost` gets the two tuning fixes in §4 (GTA widening, confidence-threshold override) —
   other trackers use BoxMOT's shipped defaults unmodified.
