@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+dist/
+*.egg-info/
+
+# Downloaded model weights (auto-fetched on first run)
+*.pt
+*.onnx
+
+# Saved annotated output
+runs/
