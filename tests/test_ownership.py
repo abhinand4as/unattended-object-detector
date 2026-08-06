@@ -25,7 +25,7 @@ def test_static_grace_period_exempts_pre_existing_luggage():
 
 
 def test_owner_assigned_to_person_nearest_during_observation_window():
-    tracker = LuggageOwnershipTracker(OwnershipConfig(near_distance=50.0, owner_window=5.0, static_grace_period=0.0))
+    tracker = LuggageOwnershipTracker(OwnershipConfig(near_distance_factor=1.0, owner_window=5.0, static_grace_period=0.0))
 
     # Luggage first appears at t=1 (past the zero-length grace period), so
     # it's a real candidate, not static furniture. Person 1 stays close for
@@ -42,11 +42,18 @@ def test_owner_assigned_to_person_nearest_during_observation_window():
 
 def test_abandonment_alert_raised_then_cleared_on_return():
     tracker = LuggageOwnershipTracker(
-        OwnershipConfig(near_distance=50.0, owner_window=1.0, away_distance=100.0, away_time=5.0, static_grace_period=0.0)
+        OwnershipConfig(
+            near_distance_factor=1.0,
+            owner_window=1.0,
+            away_distance_factor=2.0,
+            away_time=5.0,
+            static_grace_period=0.0,
+            min_reference_height=20.0,
+        )
     )
     luggage_box = (500, 500, 510, 510)
-    near_person = (500, 500, 510, 510)
-    far_person = (0, 0, 10, 10)
+    near_person = (500, 500, 510, 510)  # height=10, floored to min_reference_height=20
+    far_person = (0, 0, 10, 10)  # ~707px from the luggage either way
 
     tracker.update(0.0, luggage_boxes={}, person_boxes={})
     tracker.update(1.0, luggage_boxes={5: luggage_box}, person_boxes={1: near_person})
@@ -54,7 +61,8 @@ def test_abandonment_alert_raised_then_cleared_on_return():
     assert tracker.luggage[5].owner_id == 1
     assert not any("ALERT" in e for e in events)
 
-    # Owner walks away and stays away for >= away_time (5s): alert fires.
+    # Owner walks away (~707px, far past away_distance_factor * 20px) and stays
+    # away for >= away_time (5s): alert fires.
     events = []
     for t in [4.0, 6.0, 8.0, 9.0]:
         events += tracker.update(t, luggage_boxes={5: luggage_box}, person_boxes={1: far_person})
@@ -68,9 +76,11 @@ def test_abandonment_alert_raised_then_cleared_on_return():
 
 
 def test_ownerless_luggage_never_flagged():
-    tracker = LuggageOwnershipTracker(OwnershipConfig(near_distance=10.0, owner_window=1.0, away_time=1.0, static_grace_period=0.0))
+    tracker = LuggageOwnershipTracker(
+        OwnershipConfig(near_distance_factor=1.0, owner_window=1.0, away_time=1.0, static_grace_period=0.0, min_reference_height=20.0)
+    )
     luggage_box = (500, 500, 510, 510)
-    far_person = (0, 0, 10, 10)  # always outside near_distance
+    far_person = (0, 0, 10, 10)  # ~707px away -- always outside near_distance_factor * 20px
 
     events = []
     tracker.update(0.0, luggage_boxes={}, person_boxes={})
@@ -79,3 +89,30 @@ def test_ownerless_luggage_never_flagged():
 
     assert events == []
     assert tracker.luggage[7].owner_id is None
+
+
+def test_near_distance_scales_with_person_box_height():
+    """The whole point of near_distance_factor: the *same* pixel gap between
+    person and luggage should count as "near" or not depending on how big the
+    person's own box is -- a proxy for how close to the camera they are (see
+    config.OwnershipConfig's docstring). A flat pixel threshold couldn't tell
+    these two cases apart at all.
+    """
+    cfg = OwnershipConfig(near_distance_factor=1.0, owner_window=1.0, static_grace_period=0.0, min_reference_height=0.0)
+    luggage_box = (90, 190, 110, 200)  # bottom_center = (100, 200)
+    # Both people share the exact same bottom_center (100, 150) -- a fixed
+    # 50px gap from the luggage -- but differ in box height.
+    short_person = (90, 120, 110, 150)  # height=30 -> near_distance=30 < 50px gap
+    tall_person = (90, 70, 110, 150)  # height=80 -> near_distance=80 >= 50px gap
+
+    short_tracker = LuggageOwnershipTracker(cfg)
+    short_tracker.update(0.0, luggage_boxes={}, person_boxes={})
+    for t in [1.0, 2.0]:
+        short_tracker.update(t, luggage_boxes={1: luggage_box}, person_boxes={1: short_person})
+    assert short_tracker.luggage[1].owner_id is None  # too short a "ruler" to reach across the gap
+
+    tall_tracker = LuggageOwnershipTracker(cfg)
+    tall_tracker.update(0.0, luggage_boxes={}, person_boxes={})
+    for t in [1.0, 2.0]:
+        tall_tracker.update(t, luggage_boxes={1: luggage_box}, person_boxes={1: tall_person})
+    assert tall_tracker.luggage[1].owner_id == 1  # same physical gap, taller box -> counted as "near"

@@ -19,16 +19,24 @@ Three phases per luggage track:
    voted "owner" by pure chance and then flagged unattended the moment that
    unrelated bystander walks off.
 2. Ownership window (`owner_window` seconds from when the luggage track
-   first appears): every person within `near_distance` of the luggage
-   accumulates time-spent-nearby. When the window closes, whoever
-   accumulated the most time is fixed as the owner. If nobody was ever
-   nearby, the luggage is left ownerless and phase 3 never runs for it.
+   first appears): every person within `near_distance_factor` × their own
+   box height of the luggage accumulates time-spent-nearby. When the
+   window closes, whoever accumulated the most time is fixed as the owner.
+   If nobody was ever nearby, the luggage is left ownerless and phase 3
+   never runs for it.
 3. Abandonment watch: once an owner is fixed, track the owner-to-luggage
-   distance on every update. If it stays above `away_distance`
-   continuously for `away_time` seconds, the luggage is flagged
-   `unattended`. The flag is not latched — it clears automatically if the
-   owner comes back within `away_distance`. A missing owner track
-   (occluded, or has walked out of frame) counts as infinitely far away.
+   distance on every update. If it stays above `away_distance_factor` ×
+   the owner's own current box height continuously for `away_time`
+   seconds, the luggage is flagged `unattended`. The flag is not latched —
+   it clears automatically if the owner comes back within that same
+   distance. A missing owner track (occluded, or has walked out of frame)
+   counts as infinitely far away.
+
+Distances in phases 2 and 3 are scaled by a person's own box height rather
+than a flat pixel constant — see config.OwnershipConfig's docstring for
+why (short version: a fixed pixel threshold means a different real-world
+distance depending on camera position/zoom; box height is a local,
+per-person "ruler" that tracks perspective automatically).
 """
 
 from __future__ import annotations
@@ -57,6 +65,13 @@ def _distance(a: Point, b: Point) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
+def _box_height(box: Box) -> float:
+    """A box's height — used as a local "ruler" for scale-adaptive distance
+    thresholds (see config.OwnershipConfig's docstring)."""
+    _x1, y1, _x2, y2 = box
+    return max(y2 - y1, 0.0)
+
+
 @dataclass
 class LuggageState:
     """Per-track state for one piece of luggage. One instance lives for the
@@ -76,11 +91,12 @@ class LuggageOwnershipTracker:
 
     def __init__(self, cfg: OwnershipConfig | None = None):
         cfg = cfg or OwnershipConfig()
-        self.near_distance = cfg.near_distance
+        self.near_distance_factor = cfg.near_distance_factor
         self.owner_window = cfg.owner_window
-        self.away_distance = cfg.away_distance
+        self.away_distance_factor = cfg.away_distance_factor
         self.away_time = cfg.away_time
         self.static_grace_period = cfg.static_grace_period
+        self.min_reference_height = cfg.min_reference_height
 
         # Every luggage track id ever seen, keyed by that id, kept for the
         # lifetime of the tracker so callers (e.g. drawing code) can look up
@@ -89,6 +105,11 @@ class LuggageOwnershipTracker:
 
         self._last_t: float | None = None
         self._stream_start_t: float | None = None
+
+    def _reference_height(self, box_height: float) -> float:
+        """The person-height "ruler" a threshold factor multiplies against,
+        floored at min_reference_height (see OwnershipConfig's docstring)."""
+        return max(box_height, self.min_reference_height)
 
     def update(
         self,
@@ -118,6 +139,7 @@ class LuggageOwnershipTracker:
             self._stream_start_t = t
 
         person_points = {pid: bottom_center(box) for pid, box in person_boxes.items()}
+        person_heights = {pid: _box_height(box) for pid, box in person_boxes.items()}
         events: list[str] = []
 
         for lug_id, lug_box in luggage_boxes.items():
@@ -135,7 +157,8 @@ class LuggageOwnershipTracker:
                 # Phase 2: still within (or just past) the observation window.
                 if t - state.first_seen < self.owner_window:
                     for pid, ppt in person_points.items():
-                        if _distance(lug_pt, ppt) <= self.near_distance:
+                        near_distance = self._reference_height(person_heights[pid]) * self.near_distance_factor
+                        if _distance(lug_pt, ppt) <= near_distance:
                             state.proximity_time[pid] = state.proximity_time.get(pid, 0.0) + dt
                 elif state.proximity_time:
                     state.owner_id = max(state.proximity_time, key=state.proximity_time.get)
@@ -143,10 +166,15 @@ class LuggageOwnershipTracker:
                 continue
 
             # Phase 3: owner fixed — watch the distance between them and the luggage.
+            # A missing owner box (occluded/out of frame) falls back to the
+            # min_reference_height floor for the ruler; distance is already
+            # infinite in that case, so it's always "away" regardless.
             owner_pt = person_points.get(state.owner_id)
+            owner_height = person_heights.get(state.owner_id, 0.0)
             distance = _distance(lug_pt, owner_pt) if owner_pt is not None else math.inf
+            away_distance = self._reference_height(owner_height) * self.away_distance_factor
 
-            if distance <= self.away_distance:
+            if distance <= away_distance:
                 state.away_since = None
                 if state.unattended:
                     state.unattended = False

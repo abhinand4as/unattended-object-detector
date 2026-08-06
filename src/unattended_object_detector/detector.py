@@ -175,10 +175,14 @@ def parse_args() -> argparse.Namespace:
         help="Disable owner assignment / unattended-object detection; just detect and track normally.",
     )
     ownership_group.add_argument(
-        "--owner-distance",
+        "--owner-distance-factor",
         type=float,
-        default=default_ownership.near_distance,
-        help="'Nearby' radius in pixels while determining ownership (default: %(default)s).",
+        default=default_ownership.near_distance_factor,
+        help=(
+            "'Nearby' radius while determining ownership, as a multiple of the candidate "
+            "person's own box height rather than a fixed pixel value — see config.py's "
+            "docstring for why (default: %(default)s)."
+        ),
     )
     ownership_group.add_argument(
         "--owner-window",
@@ -187,10 +191,13 @@ def parse_args() -> argparse.Namespace:
         help="Seconds to observe nearby people before fixing an owner (default: %(default)s).",
     )
     ownership_group.add_argument(
-        "--away-distance",
+        "--away-distance-factor",
         type=float,
-        default=default_ownership.away_distance,
-        help="Pixel distance beyond which the owner is 'away' (default: %(default)s).",
+        default=default_ownership.away_distance_factor,
+        help=(
+            "Distance beyond which the owner is 'away', as a multiple of the owner's own "
+            "current box height rather than a fixed pixel value (default: %(default)s)."
+        ),
     )
     ownership_group.add_argument(
         "--away-time",
@@ -206,6 +213,16 @@ def parse_args() -> argparse.Namespace:
             "Luggage first seen within this many seconds of stream start is treated as pre-existing scene "
             "furniture (e.g. a false-positive detection on a cabinet), not abandoned luggage, and exempted "
             "from owner/unattended logic entirely (default: %(default)s)."
+        ),
+    )
+    ownership_group.add_argument(
+        "--min-reference-height",
+        type=float,
+        default=default_ownership.min_reference_height,
+        help=(
+            "Pixel floor under the person-height 'ruler' that --owner-distance-factor/"
+            "--away-distance-factor multiply against, guarding against degenerate near-zero-"
+            "height boxes (default: %(default)s)."
         ),
     )
     return parser.parse_args()
@@ -255,11 +272,12 @@ def main() -> None:
     if not args.no_luggage_logic:
         ownership_tracker = LuggageOwnershipTracker(
             OwnershipConfig(
-                near_distance=args.owner_distance,
+                near_distance_factor=args.owner_distance_factor,
                 owner_window=args.owner_window,
-                away_distance=args.away_distance,
+                away_distance_factor=args.away_distance_factor,
                 away_time=args.away_time,
                 static_grace_period=args.static_grace_period,
+                min_reference_height=args.min_reference_height,
             )
         )
 

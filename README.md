@@ -138,11 +138,23 @@ Every tunable in the ownership state machine lives in
 
 | Field | CLI flag | Default | Meaning |
 |---|---|---|---|
-| `near_distance` | `--owner-distance` | 150 px | "Nearby" radius while determining ownership |
-| `owner_window` | `--owner-window` | 5.0 s | How long to observe nearby people before fixing an owner |
-| `away_distance` | `--away-distance` | 250 px | Owner-to-luggage distance beyond which the owner is "away" |
+| `near_distance_factor` | `--owner-distance-factor` | 0.6 | "Nearby" radius while determining ownership, as a multiple of the candidate person's own box height |
+| `owner_window` | `--owner-window` | 3.0 s | How long to observe nearby people before fixing an owner |
+| `away_distance_factor` | `--away-distance-factor` | 1.2 | Owner-to-luggage distance beyond which the owner is "away", as a multiple of the owner's own current box height |
 | `away_time` | `--away-time` | 10.0 s | Continuous away-time before luggage is flagged unattended |
 | `static_grace_period` | `--static-grace-period` | 3.0 s | Luggage seen this soon after stream start is treated as pre-existing furniture, not abandoned |
+| `min_reference_height` | `--min-reference-height` | 20 px | Floor under the box-height "ruler" the two factors above multiply against |
+
+**`near_distance_factor`/`away_distance_factor` are not pixel distances** — they're unitless
+multiples of a person's own bounding-box height, computed per pair at check time. A fixed pixel
+threshold means a different real-world distance depending on where the camera is or how zoomed
+in it is (an object twice as close to the camera covers roughly twice as many pixels for the
+same real-world gap), so it silently needs re-tuning every time the camera moves. Since a real
+person's height is roughly constant, their box height in a given part of the frame is a decent
+local proxy for "how many pixels represent about a meter here" — it grows and shrinks with
+perspective the same way any other real-world distance in that spot would. See
+`config.OwnershipConfig`'s docstring for the full reasoning and its limits (e.g. a crouching
+person shrinks their own ruler).
 
 Edit `config.py` to change the defaults everywhere, or override any single field per run with
 its CLI flag — same pattern as `--luggage-prompts` above. See `ownership.py`'s module

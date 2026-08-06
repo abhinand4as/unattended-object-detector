@@ -21,9 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with it, every person and every piece of luggage is drawn as before. Has no effect under
   `--no-luggage-logic`, where there's no ownership concept to filter by.
 - `config.py` with `OwnershipConfig`, a dataclass listing every tunable in the ownership/
-  abandonment state machine (`near_distance`, `owner_window`, `away_distance`, `away_time`,
-  `static_grace_period`) in one place, edit-here-to-tune — mirrors `prompts.py`'s role for the
-  luggage vocabulary.
+  abandonment state machine (`near_distance_factor`, `owner_window`, `away_distance_factor`,
+  `away_time`, `static_grace_period`, `min_reference_height`) in one place, edit-here-to-tune —
+  mirrors `prompts.py`'s role for the luggage vocabulary.
 
 ### Changed
 
@@ -52,6 +52,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--away-time`, `--static-grace-period`) now read their argparse defaults from
   `OwnershipConfig()` instead of duplicating the literals, so the CLI help and the tracker's
   own defaults can't drift out of sync.
+- **`near_distance`/`away_distance` replaced with scale-adaptive `near_distance_factor`/
+  `away_distance_factor`** (and CLI flags `--owner-distance` → `--owner-distance-factor`,
+  `--away-distance` → `--away-distance-factor`). A fixed pixel radius silently meant a
+  different real-world distance depending on camera position/zoom; the factors instead
+  multiply a "ruler" computed per pair at check time — the relevant person's own current
+  bounding-box height (`ownership._box_height`), floored at a new `min_reference_height`
+  field/`--min-reference-height` flag to guard against degenerate near-zero-height boxes. Phase
+  2 uses each candidate person's own height; phase 3 re-derives the ruler from the owner's
+  current box every update, so it keeps adapting as the owner moves through the scene. See
+  `ARCHITECTURE.md` §5.1 for the full reasoning and its remaining limits (still an
+  approximation, not a camera calibration). Added `tests/test_ownership.py::
+  test_near_distance_scales_with_person_box_height` covering the new behavior directly.
 
 ## [0.1.0] - 2026-08-06
 

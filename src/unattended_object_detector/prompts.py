@@ -22,29 +22,31 @@ from __future__ import annotations
 
 from typing import List
 
-LUGGAGE_PROMPTS: List[str] = [
-    "suitcase", "backpack", "handbag", "duffel bag", "shopping bag",
-    "cardboard box", "plastic bag", "briefcase", "trolley bag",
-    "luggage", "sack", "package", "parcel", "container",
-    # Catch-all: covers objects that don't match any noun above but still
-    # fit the core pattern — sitting alone on the floor, no owner nearby.
-    # Broader net, so also more prone to false positives on ordinary floor
-    # clutter; worth validating against your own footage before relying on
-    # it in production.
-    "an unattended object on the floor",
-]
+# LUGGAGE_PROMPTS: List[str] = [
+#     "suitcase", "backpack", "handbag", "duffel bag", "shopping bag",
+#     "cardboard box", "plastic bag", "briefcase", "trolley bag",
+#     "luggage", "sack", "package", "parcel", "container",
+#     # Catch-all: covers objects that don't match any noun above but still
+#     # fit the core pattern — sitting alone on the floor, no owner nearby.
+#     # Broader net, so also more prone to false positives on ordinary floor
+#     # clutter; worth validating against your own footage before relying on
+#     # it in production.
+#     "an unattended object on the floor",
+# ]
 
-LUGGAGE_PROMPTS: List[str] = [
-    "suitcase", "backpack", "handbag", "duffel bag", "shopping bag",
-    "plastic bag", "briefcase", "trolley bag",
-    "luggage", "sack", "package", "parcel", "container",
-    # Catch-all: covers objects that don't match any noun above but still
-    # fit the core pattern — sitting alone on the floor, no owner nearby.
-    # Broader net, so also more prone to false positives on ordinary floor
-    # clutter; worth validating against your own footage before relying on
-    # it in production.
-    "an unattended object on the floor",
-]
+# LUGGAGE_PROMPTS: List[str] = [
+#     "suitcase", "backpack", "handbag", "duffel bag", "shopping bag",
+#     "plastic bag", "briefcase", "trolley bag",
+#     "luggage", "sack", "package", "parcel", "container",
+#     # Catch-all: covers objects that don't match any noun above but still
+#     # fit the core pattern — sitting alone on the floor, no owner nearby.
+#     # Broader net, so also more prone to false positives on ordinary floor
+#     # clutter; worth validating against your own footage before relying on
+#     # it in production.
+#     "an unattended object on the floor",
+# ]
+
+LUGGAGE_PROMPTS: List[str] = ["luggage on the floor", "handbag on the floor", "backpack on the floor", "suitcase on the floor", "duffel bag on the floor" ]
 
 # Negative prompts. Fed to the detector alongside the luggage vocabulary
 # (see open_vocab.Config.prompts) so it has something to compete against,

@@ -165,13 +165,14 @@ machinery.
 
 `LuggageOwnershipTracker.__init__` takes a single `config.OwnershipConfig` (defaults to
 `OwnershipConfig()` if omitted), mirroring `open_vocab.OpenVocabDetector`'s own `cfg`-taking
-constructor (§3.2). Every number below — near/away distances, the owner and away windows, the
-static grace period — is a field on that dataclass, kept in its own module for the same reason
-`prompts.py` holds the vocabulary separately: one place to tune per camera/scene without
-touching the state-machine logic itself. `detector.py` builds an `OwnershipConfig` from the
-matching `--owner-distance`/`--owner-window`/`--away-distance`/`--away-time`/
-`--static-grace-period` flags, whose own argparse defaults are read from `OwnershipConfig()` —
-so the CLI help text and the tracker's defaults can never drift out of sync.
+constructor (§3.2). Every number below — near/away distance factors, the owner and away
+windows, the static grace period, the reference-height floor — is a field on that dataclass,
+kept in its own module for the same reason `prompts.py` holds the vocabulary separately: one
+place to tune per camera/scene without touching the state-machine logic itself. `detector.py`
+builds an `OwnershipConfig` from the matching `--owner-distance-factor`/`--owner-window`/
+`--away-distance-factor`/`--away-time`/`--static-grace-period`/`--min-reference-height` flags,
+whose own argparse defaults are read from `OwnershipConfig()` — so the CLI help text and the
+tracker's defaults can never drift out of sync.
 
 Three phases per luggage track, driven by `LuggageOwnershipTracker.update()`:
 
@@ -183,18 +184,49 @@ Three phases per luggage track, driven by `LuggageOwnershipTracker.update()`:
    detection eventually gets *some* nearby person voted "owner" by pure chance and is then
    flagged unattended the moment that unrelated bystander walks off.
 2. **Ownership window** (`--owner-window` seconds from when the luggage track first appears).
-   Every person within `--owner-distance` of the luggage accumulates time-spent-nearby. When
-   the window closes, whoever accumulated the most time is fixed as the owner. If nobody was
-   ever nearby, the luggage stays ownerless and phase 3 never runs for it.
+   Every person within `--owner-distance-factor` × *that person's own* box height of the
+   luggage accumulates time-spent-nearby. When the window closes, whoever accumulated the most
+   time is fixed as the owner. If nobody was ever nearby, the luggage stays ownerless and
+   phase 3 never runs for it.
 3. **Abandonment watch.** Once an owner is fixed, the owner-to-luggage distance is tracked on
-   every update. If it stays above `--away-distance` continuously for `--away-time` seconds,
-   the luggage is flagged `unattended`. The flag is not latched — it clears automatically if
-   the owner comes back within `--away-distance`. A missing owner track (occluded, or has
-   walked out of frame) counts as infinitely far away.
+   every update against `--away-distance-factor` × *the owner's own current* box height. If it
+   stays above that continuously for `--away-time` seconds, the luggage is flagged
+   `unattended`. The flag is not latched — it clears automatically if the owner comes back
+   within that same distance. A missing owner track (occluded, or has walked out of frame)
+   counts as infinitely far away regardless of the threshold.
 
 Distance uses each box's **bottom-center point** (`bottom_center`), not its centroid — a much
 better proxy for "where this object/person actually is on the floor" than a box centroid,
 which for a tall person floats near their chest.
+
+### 5.1 Scale-adaptive thresholds: why not a flat pixel distance
+
+A fixed pixel threshold (the original design) silently means a different real-world distance
+depending on camera position or zoom: an object twice as close to the camera covers roughly
+twice as many pixels for the same real-world gap, so a constant tuned for one camera setup
+needs re-tuning every time the camera moves — see the "known limitations" bullet this section
+used to carry, now addressed here instead.
+
+`near_distance_factor` and `away_distance_factor` are unitless multipliers instead, applied
+against a "ruler" computed per pair *at check time*: the relevant person's own current
+bounding-box height (`ownership._box_height`, floored at `min_reference_height` via
+`LuggageOwnershipTracker._reference_height` to avoid a degenerate near-zero-height box
+collapsing its own threshold to ~0). A real person's height is roughly constant regardless of
+who they are, so how tall their box is *in that part of the frame* is a decent local proxy for
+"how many pixels currently represent about a meter here" — it scales with perspective the same
+way any other real-world distance at that spot would, with zero calibration required. Phase 2
+uses each *candidate* person's own height (different people at different depths in the same
+frame get different, correctly-scaled thresholds); phase 3 re-derives the ruler from the
+*owner's* current box every update, so it keeps tracking correctly even as the owner walks
+toward or away from the camera mid-scene.
+
+This is an approximation, not a calibrated measurement: it assumes a roughly-constant real
+person height and a person standing roughly upright and facing the camera. A person crouching,
+lying down, or foreshortened at a steep camera angle shrinks their own ruler and makes the
+resulting threshold too small for that moment — see §9's known limitations for where a fully
+calibrated approach (e.g. a homography mapping image pixels to real-world ground-plane
+coordinates) would do better, at the cost of a per-camera calibration step this design
+deliberately avoids.
 
 `update()` returns human-readable event strings for anything that changed that frame (owner
 assigned, alert raised, alert cleared) — printed by `detector.main`, not parsed by anything
@@ -290,11 +322,20 @@ luggage` (one `LuggageState` per track id ever seen), `FrameClock`'s elapsed tim
   at creation stays exempt forever, even if it later turns out to be a real abandoned bag that
   happened to be flagged within the grace period after a mid-stream restart.
 - **Ownership is decided once, within a fixed window, and never re-opened.** If the true owner
-  wasn't within `--owner-distance` during the observation window (e.g. still walking into
-  frame), the luggage stays ownerless for the rest of the run and never enters phase 3 at all.
-- **Distance-based proximity ignores scene geometry.** `--owner-distance` / `--away-distance`
-  are fixed pixel radii; a wide-angle or oblique camera view means the same real-world distance
-  covers very different pixel spans near vs. far from the camera.
+  wasn't within `--owner-distance-factor` × their own box height during the observation window
+  (e.g. still walking into frame), the luggage stays ownerless for the rest of the run and
+  never enters phase 3 at all.
+- **Scale-adaptive thresholds are an approximation, not a calibrated measurement (§5.1).**
+  `--owner-distance-factor`/`--away-distance-factor` scale with a person's own box height
+  instead of a flat pixel radius, which fixes the worst of the old scene-geometry sensitivity
+  (a threshold tuned on one camera no longer silently means a different real-world distance on
+  another), but it still assumes a roughly-constant real person height and a person standing
+  roughly upright, facing the camera. A crouching, lying-down, or steeply foreshortened person
+  shrinks their own "ruler" and can make the threshold too tight for that moment. A wide-angle
+  or oblique view can also distort a single person's box height itself (e.g. partial
+  occlusion). The fully correct fix — a homography mapping image pixels to real-world
+  ground-plane coordinates — would eliminate this, at the cost of a per-camera calibration step
+  this design deliberately avoids.
 - **Single combined luggage class.** Once prompts collapse to `LUGGAGE_CLASS_ID`, there's no
   way to tell downstream what kind of object it was (backpack vs. cardboard box) — only that
   it matched *some* luggage-ish prompt.
